@@ -1,0 +1,26 @@
+containerPort: 5001
+image: 339713176242.dkr.ecr.us-east-1.amazonaws.com/ammb/fullstack-chat-app-backend:latest
+frontend:
+  image: 339713176242.dkr.ecr.us-east-1.amazonaws.com/ammb/fullstack-chat-app-frontend:latest
+  containerPort: 80
+  env:
+    VITE_APP_BACKEND_ADDRESS: "http://backend.chat-app.svc.cluster.local:5001"
+
+backend:
+  env:
+    PORT: "5001"
+      
+namespace: chat-app
+secrets:
+  mongodbUri: ""
+  jwtSecret: ""
+  cloudinaryCloudName: ""
+  cloudinaryApiKey: ""
+  cloudinaryApiSecret: ""
+  awsBucketName: ""
+  awsRegion: ""
+  awsAccessKeyId: ""
+  awsSecretAccessKey: ""
+
+
+      

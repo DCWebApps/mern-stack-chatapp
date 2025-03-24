@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  frontend:
+    image: ammb/fullstack-chat-app-frontend:latest
+    ports:
+      - "80:80"
+    environment:
+      - VITE_APP_BACKEND_ADDRESS=${VITE_APP_BACKEND_ADDRESS}
+
+  backend:
+    image: 339713176242.dkr.ecr.us-east-1.amazonaws.com/ammb/fullstack-chat-app-backend:latest
+    ports:
+      - "5001:5001"
+    environment:
+      - MONGODB_URI=${MONGODB_URI}
+      - JWT_SECRET=${JWT_SECRET}
+      - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME}
+      - CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY}
+      - CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET}
+      - AWS_BUCKET_NAME=${AWS_BUCKET_NAME}
+      - AWS_REGION=${AWS_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}

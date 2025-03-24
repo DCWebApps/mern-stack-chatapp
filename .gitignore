@@ -1,0 +1,44 @@
+origin/feature
+# Logs and Debug Files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Build Artifacts
+dist/
+dist-cjs/
+dist-es/
+dist-types/
+
+# Dependency Directories
+node_modules/
+
+# Terraform State and Variables
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/terraform.tfvars
+
+# Environment Files
+.env
+.env.*
+!.env.example
+
+
+# Sensitive Files
+secrets.yml
+service-account-key.json
+iam-policy.json
+
+
+# Build Tools
+.esbuild/
+.rollup/
+.vite/
+
+# Misc
+*.local

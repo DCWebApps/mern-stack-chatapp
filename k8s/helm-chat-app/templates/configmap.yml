@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-secrets
+  namespace: {{ .Values.namespace }}
+data:
+  VITE_APP_BACKEND_ADDRESS: "http://backend-service:5001"
+  

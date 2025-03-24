@@ -1,0 +1,345 @@
+variables:
+  AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+
+  NAMESPACE: "chat-app"
+  HELM_TIMEOUT: "15m"
+  HELM_ATOMIC: "true"  
+  HELM_HISTORY_MAX: "5"  
+  
+  TF_STATE_BUCKET: $TF_STATE_BUCKET
+  TF_STATE_KEY: $TF_STATE_KEY
+
+# Define global cache settings
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - .npm/
+    - .terraform/
+
+stages:
+  - validate
+  - build
+  - push
+  - deploy
+  - rollback
+
+
+# Job to validate terraform code
+terraform-validate:
+  stage: validate
+  image: hashicorp/terraform:latest
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-terraform
+    paths:
+      - terraform/.terraform/
+  script:
+    - cd terraform
+    - terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${AWS_DEFAULT_REGION}"
+    - terraform validate
+  only:
+    changes:
+      - terraform/**/*
+
+# Job to lint Helm charts
+helm-lint:
+  stage: validate
+  image:
+    name: alpine/helm:latest
+    entrypoint: [""]
+  script:
+    - cd k8s/helm-chat-app
+    - helm lint .
+  only:
+    changes:
+      - k8s/**/*
+
+# Build frontend
+frontend-build:
+  stage: build
+  image: node:16-alpine
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-frontend-deps
+    paths:
+      - frontend/node_modules/
+      - .npm/
+  script:
+    - cd frontend
+    - npm ci --cache .npm --prefer-offline
+    - npm run build
+  artifacts:
+    paths:
+      - frontend/dist/
+    expire_in: 1 hour
+  only:
+    changes:
+      - frontend/**/*
+      - package*.json
+      - .gitlab-ci.yml
+
+# Build backend
+backend-build:
+  stage: build
+  image: node:16-alpine
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-backend-deps
+    paths:
+      - backend/node_modules/
+      - .npm/
+  script:
+    - cd backend
+    - npm ci --cache .npm --prefer-offline
+    - npm run build || echo "No build script found, but continuing..."
+  artifacts:
+    paths:
+      - backend/dist/
+      - backend/src/
+    expire_in: 1 hour
+  only:
+    changes:
+      - backend/**/*
+      - package*.json
+      - .gitlab-ci.yml
+
+# Build and push Docker images to ECR
+frontend-docker:
+  stage: push
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  variables:
+    FRONTEND_ECR_REPOSITORY: "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/ammb/fullstack-chat-app-frontend"
+    DOCKER_BUILDKIT: 1
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-docker
+    paths:
+      - .docker-cache/
+  before_script:
+    - apk add --no-cache curl python3 py3-pip
+    - pip install awscli
+    - aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+    - mkdir -p .docker-cache
+  script:
+    - cd frontend
+    - docker build --cache-from ${FRONTEND_ECR_REPOSITORY}:latest --build-arg BUILDKIT_INLINE_CACHE=1 -t ${FRONTEND_ECR_REPOSITORY}:${CI_COMMIT_SHORT_SHA} -f Dockerfile.prod .
+    - docker tag ${FRONTEND_ECR_REPOSITORY}:${CI_COMMIT_SHORT_SHA} ${FRONTEND_ECR_REPOSITORY}:latest
+    - docker push ${FRONTEND_ECR_REPOSITORY}:${CI_COMMIT_SHORT_SHA}
+    - docker push ${FRONTEND_ECR_REPOSITORY}:latest
+    # Store the image tag for potential rollback
+    - echo "FRONTEND_IMAGE_TAG=${CI_COMMIT_SHORT_SHA}" >> ../build.env
+  artifacts:
+    reports:
+      dotenv: ../build.env
+
+backend-docker:
+  stage: push
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  variables:
+    BACKEND_ECR_REPOSITORY: "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/ammb/fullstack-chat-app-backend"
+    DOCKER_BUILDKIT: 1
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-docker
+    paths:
+      - .docker-cache/
+  before_script:
+    - apk add --no-cache curl python3 py3-pip
+    - pip install awscli
+    - aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+    - mkdir -p .docker-cache
+  script:
+    - cd backend
+    - docker build --cache-from ${BACKEND_ECR_REPOSITORY}:latest --build-arg BUILDKIT_INLINE_CACHE=1 -t ${BACKEND_ECR_REPOSITORY}:${CI_COMMIT_SHORT_SHA} -f Dockerfile.prod .
+    - docker tag ${BACKEND_ECR_REPOSITORY}:${CI_COMMIT_SHORT_SHA} ${BACKEND_ECR_REPOSITORY}:latest
+    - docker push ${BACKEND_ECR_REPOSITORY}:${CI_COMMIT_SHORT_SHA}
+    - docker push ${BACKEND_ECR_REPOSITORY}:latest
+    # Store the image tag for potential rollback
+    - echo "BACKEND_IMAGE_TAG=${CI_COMMIT_SHORT_SHA}" >> ../build.env
+  artifacts:
+    reports:
+      dotenv: ../build.env
+
+# Apply Terraform changes if infrastructure code changes
+terraform-apply:
+  stage: deploy
+  image: hashicorp/terraform:latest
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-terraform
+    paths:
+      - terraform/.terraform/
+  script:
+    - cd terraform
+    - terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${AWS_DEFAULT_REGION}"
+    - terraform plan -out=tfplan
+    - terraform apply -auto-approve tfplan
+    # Create a backup of the current state for rollback
+    - cp terraform.tfstate terraform.tfstate.backup
+  artifacts:
+    paths:
+      - terraform/terraform.tfstate.backup
+    expire_in: 1 week
+  only:
+    changes:
+     - terraform/**/*
+
+# Deploy using Helm to EKS
+deploy-to-eks:
+  stage: deploy
+  image: 
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-helm
+    paths:
+      - .helm/
+  before_script:
+    - yum install -y tar gzip curl jq openssl 
+    - curl -LO "https://dl.k8s.io/release/stable.txt"
+    - curl -LO "https://dl.k8s.io/release/$(cat stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+    - curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+    - chmod +x get_helm.sh && ./get_helm.sh
+    # Use the original EKS config approach that was working
+    - aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${EKS_CLUSTER_NAME}
+    - kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+    - kubectl label namespace ${NAMESPACE} app.kubernetes.io/managed-by=Helm --overwrite
+    - kubectl annotate namespace ${NAMESPACE} meta.helm.sh/release-name=chat-app --overwrite
+    - kubectl annotate namespace ${NAMESPACE} meta.helm.sh/release-namespace=${NAMESPACE} --overwrite
+    - helm list -n ${NAMESPACE} -o json > pre-deploy-helm-status.json
+  script:
+    - cd k8s/helm-chat-app
+    # Update values.yaml with new image tags and secrets
+    - |
+      cat > values-deploy.yaml <<EOF
+      frontend:
+        repository: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/chat-frontend
+        tag: ${CI_COMMIT_SHORT_SHA}
+        replicaCount: 2
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxSurge: 1
+            maxUnavailable: 0
+      backend:
+        repository: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/chat-backend
+        tag: ${CI_COMMIT_SHORT_SHA}
+        replicaCount: 2
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxSurge: 1
+            maxUnavailable: 0
+        env:
+          PORT: "5001"    
+      secrets:
+        mongodbUri: ${MONGODB_URI}
+        jwtSecret: ${JWT_SECRET}
+        cloudinaryCloudName: ${CLOUDINARY_CLOUD_NAME}
+        cloudinaryApiKey: ${CLOUDINARY_API_KEY}
+        cloudinaryApiSecret: ${CLOUDINARY_API_SECRET}
+        awsBucketName: ${AWS_BUCKET_NAME}
+        awsRegion: ${AWS_REGION}
+        awsAccessKeyId: ${AWS_ACCESS_KEY_ID}
+        awsSecretAccessKey: ${AWS_SECRET_ACCESS_KEY}
+      EOF
+    # Deploy using Helm
+    - helm upgrade --install --wait --timeout ${HELM_TIMEOUT} --atomic --history-max ${HELM_HISTORY_MAX} chat-app . -f values-deploy.yaml -f values.yaml -n ${NAMESPACE}
+    # Verify deployment health
+    - kubectl rollout status deployment/frontend -n ${NAMESPACE} --timeout=${HELM_TIMEOUT}
+    - kubectl rollout status deployment/backend -n ${NAMESPACE} --timeout=${HELM_TIMEOUT}
+    - kubectl rollout restart deployment/frontend -n ${NAMESPACE}
+    - kubectl rollout restart deployment/backend -n ${NAMESPACE}
+    # Test the deployment
+    - |
+      FRONTEND_SVC=$(kubectl get svc -n ${NAMESPACE} | grep frontend | awk '{print $1}')
+      BACKEND_SVC=$(kubectl get svc -n ${NAMESPACE} | grep backend | awk '{print $1}')
+      echo "Frontend service: ${FRONTEND_SVC}"
+      echo "Backend service: ${BACKEND_SVC}"
+      echo "Testing frontend connection..."
+      kubectl run -i --rm --restart=Never curl-test --image=curlimages/curl:7.82.0 -n ${NAMESPACE} -- curl -s ${FRONTEND_SVC} | grep -q "html" && echo "Frontend service is responding" || echo "WARNING: Frontend service may not be responding properly"
+      echo "Testing backend connection..."
+      kubectl run -i --rm --restart=Never curl-test --image=curlimages/curl:7.82.0 -n ${NAMESPACE} -- curl -s ${BACKEND_SVC} | grep -q "version\|status" && echo "Backend service is responding" || echo "WARNING: Backend service may not be responding properly"
+    # Save current deployment state for potential manual rollback
+    - helm list -n ${NAMESPACE} -o json > post-deploy-helm-status.json
+  artifacts:
+    paths:
+      - k8s/helm-chat-app/pre-deploy-helm-status.json
+      - k8s/helm-chat-app/post-deploy-helm-status.json
+      - k8s/helm-chat-app/values-deploy.yaml
+    expire_in: 1 week
+  environment:
+    name: production
+  needs:
+    - frontend-docker
+    - backend-docker
+
+# Rollback Helm deployment
+# Rollback Helm deployment
+helm-rollback:
+  stage: rollback
+  image: 
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-helm
+    paths:
+      - .helm/
+  before_script:
+    - yum install -y tar gzip curl jq
+    - curl -LO "https://dl.k8s.io/release/stable.txt"
+    - curl -LO "https://dl.k8s.io/release/$(cat stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+    - curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+    - chmod +x get_helm.sh && ./get_helm.sh
+    # Use the original EKS config approach that was working
+    - aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${EKS_CLUSTER_NAME}
+  script:
+    - cd k8s/helm-chat-app
+    - 'CURRENT_REVISION=$(helm history chat-app -n ${NAMESPACE} | grep -v "REVISION" | sort -n -r | head -1 | awk "{print \$1}")'
+    - 'PREVIOUS_REVISION=$((CURRENT_REVISION - 1))'
+    - 'echo "Current revision: $CURRENT_REVISION"'
+    - 'echo "Rolling back to revision: $PREVIOUS_REVISION"'
+    - 'helm rollback chat-app $PREVIOUS_REVISION -n ${NAMESPACE} --wait --timeout ${HELM_TIMEOUT}'
+    - 'kubectl rollout status deployment/frontend -n ${NAMESPACE} --timeout=${HELM_TIMEOUT}'
+    - 'kubectl rollout status deployment/backend -n ${NAMESPACE} --timeout=${HELM_TIMEOUT}'
+    - 'echo "Rollback completed to revision $PREVIOUS_REVISION"'
+  when: manual
+  dependencies:
+    - deploy-to-eks
+  environment:
+    name: production
+  needs:
+  - optional: true
+    job: deploy-to-eks
+
+# Rollback Terraform changes
+terraform-rollback:
+  stage: rollback
+  image: hashicorp/terraform:latest
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-terraform
+    paths:
+      - terraform/.terraform/
+  script:
+    - cd terraform
+    - if [ -f terraform.tfstate.backup ]; then
+        echo "Rolling back terraform state...";
+        cp terraform.tfstate.backup terraform.tfstate;
+        terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${AWS_DEFAULT_REGION}";
+        terraform plan;
+        echo "Rollback prepared. Review the plan output above.";
+        echo "To apply the rollback, run the following command manually:";
+        echo "terraform apply";
+      else
+        echo "No terraform state backup found. Cannot rollback.";
+      fi
+  when: manual
+  dependencies:
+    - terraform-apply
+  environment:
+    name: production
+  needs:
+  - optional: true
+    job: terraform-apply

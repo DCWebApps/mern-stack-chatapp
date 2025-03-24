@@ -1,0 +1,37 @@
+# Frontend Dockerfile.prod
+FROM node:18-alpine AS build
+WORKDIR /app
+
+# Copy package files and install dependencies
+COPY package*.json ./
+RUN npm ci
+
+# Copy source files
+COPY . ./
+
+# Build the application
+ARG VITE_APP_BACKEND_ADDRESS
+ENV VITE_APP_BACKEND_ADDRESS=${VITE_APP_BACKEND_ADDRESS}
+RUN npm run build
+
+# Production stage using Nginx
+FROM nginx:1.25.4-alpine-slim
+COPY --from=build /app/dist /usr/share/nginx/html
+# Update this path to the correct location of your nginx.conf
+COPY ./nginx/nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+
+# FROM node:20-alpine as builder
+# WORKDIR /app
+# COPY . .
+# ARG VITE_APP_BACKEND_ADDRESS
+# ENV VITE_APP_BACKEND_ADDRESS $VITE_APP_BACKEND_ADDRESS
+# RUN npm install
+# RUN npm run build
+
+# FROM nginx:1.25.4-alpine-slim as prod
+# COPY --from=builder app/frontend/dist /usr/share/nginx/html
+# COPY frontend/nginx.conf  /etc/nginx/conf.d/default.conf
+# EXPOSE 3000
+# CMD ["nginx", "-g", "daemon off;"]
+

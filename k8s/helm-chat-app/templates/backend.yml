@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: {{ .Values.image }}
+          ports:
+            - containerPort: {{ .Values.containerPort }}
+          env:
+            # MongoDB
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: MONGODB_URI
+            # JWT
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: JWT_SECRET
+            # Cloudinary
+            - name: CLOUDINARY_CLOUD_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: CLOUDINARY_CLOUD_NAME
+            - name: CLOUDINARY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: CLOUDINARY_API_KEY
+            - name: CLOUDINARY_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: CLOUDINARY_API_SECRET
+            - name: AWS_BUCKET_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: AWS_BUCKET_NAME
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: AWS_REGION
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: AWS_SECRET_ACCESS_KEY   
+            - name: PORT
+              value: "{{ .Values.backend.env.PORT }}"                    
+
+            # Google Cloud Storage (GCS)
+      #       - name: GCS_PROJECT_ID
+      #         valueFrom:
+      #           secretKeyRef:
+      #             name: app-secrets
+      #             key: GCS_PROJECT_ID
+      #       - name: GCS_BUCKET_NAME
+      #         valueFrom:
+      #           secretKeyRef:
+      #             name: app-secrets
+      #             key: GCS_BUCKET_NAME
+      #       # Path to Google Service Account JSON (mounted from secret)
+      #       - name: GCS_SERVICE_ACCOUNT
+      #         value: /var/secrets/google/service-account-key.json
+      #     volumeMounts:
+      #       # Mount Google Service Account JSON
+      #       - name: google-cloud-key
+      #         mountPath: /var/secrets/google
+      #         readOnly: true
+      # volumes:
+      #   # Reference the secret containing the Google Service Account JSON
+      #   - name: google-cloud-key
+      #     secret:
+      #       secretName: app-secrets
+      #       items:
+      #         - key: GCS_SERVICE_ACCOUNT  # Secret key with base64-encoded JSON
+      #           path: service-account-key.json  # File path: /var/secrets/google/service-account-key.json
